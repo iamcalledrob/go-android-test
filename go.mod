@@ -1,4 +1,4 @@
-module go-android-test
+module github.com/iamcalledrob/go-android-test
 
 go 1.18
 
