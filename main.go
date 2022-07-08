@@ -2,9 +2,9 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"github.com/jessevdk/go-flags"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,27 +52,18 @@ ANDROID_SERIAL=emulator-1234 go-android-test -s 21 -run TestFoo
 	fmt.Printf("Located adb at: %s\n", adbPath)
 
 	// Ask the running Emulator for its abi so we know how to compile for it.
-	buf := new(bytes.Buffer)
-	cmd := exec.Command(adbPath, "-e", "shell", "getprop ro.product.cpu.abilist")
-	cmd.Stdout = buf
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
+	abi, _, err := cmd(adbPath, "shell", "getprop ro.product.cpu.abilist")
 	if err != nil {
 		fmt.Printf("Fatal: Is an Android Emulator running?\n")
 		exitCode = 1
 		return
 	}
-	abi := strings.TrimSpace(buf.String())
 	fmt.Printf("Running Android Emulator ABI is '%s'\n", abi)
 
 	// Cross-compile tests to an Android binary that's runnable on the emulator
 	fmt.Println("Cross-compiling tests")
-	cmd = exec.Command(
-		"ndkenv", "-a", abi, "-s", strconv.Itoa(opts.MinSDKVersion),
+	_, _, err = cmd("ndkenv", "-a", abi, "-s", strconv.Itoa(opts.MinSDKVersion),
 		"go", "test", "-c", "-o", testBinary)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
 	if err != nil {
 		fmt.Printf("Fatal: compiling tests: %s\n", err)
 		exitCode = 1
@@ -80,33 +71,15 @@ ANDROID_SERIAL=emulator-1234 go-android-test -s 21 -run TestFoo
 	}
 	fmt.Printf("Compiled tests to '%s'\n", testBinary)
 
-	// We need root on the emulator to copy and run executables
-	fmt.Println("Ensuring adb has root permissions")
-	buf = new(bytes.Buffer)
-	cmd = exec.Command(adbPath, "root")
-	cmd.Stdout = buf
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		fmt.Printf("Fatal: running %s: %s\n", cmd, err)
-		exitCode = 1
-		return
-	}
-	if strings.Contains(buf.String(), "cannot run as root") {
-		fmt.Printf("Android Emulator is not rooted. Use a device without Google Play Services.")
-		exitCode = 1
-		return
-	}
-
-	// Copy test binary into emulator at /data/local/<binary>
+	// Copy test binary into emulator at /data/local/tmp/<binary>
+	// Note: Binaries run from /data/local/tmp have greater permissions than those run from other
+	// locations. Notably, they're executable even when non-root, and allow for dlopen() to open
+	// system libraries (like libart.so)
 	fmt.Println("Copying compiled tests onto device")
-	remoteTestBinary := filepath.Join("data", "local", filepath.Base(testBinary))
-	cmd = exec.Command(adbPath, "push", testBinary, remoteTestBinary)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		fmt.Printf("Fatal: running %s: %s\n", cmd, err)
+	remoteTmpDir := filepath.Join("/data", "local", "tmp")
+	remoteTestBinary := filepath.Join(remoteTmpDir, filepath.Base(testBinary))
+	if _, _, err = cmd(adbPath, "push", testBinary, remoteTestBinary); err != nil {
+		fmt.Printf("Fatal: Copying to device: %s\n", err)
 		exitCode = 1
 		return
 	}
@@ -120,20 +93,42 @@ ANDROID_SERIAL=emulator-1234 go-android-test -s 21 -run TestFoo
 		}
 	}
 
-	// Set executable permissions (adb strips), run tests binary, then delete it.
+	// This allows loading of system libraries (i.e. libart.so) to instantiate a JVM from inside
+	// the native process.
+	// Thanks to https://gershnik.github.io/2021/03/26/load-art-from-native.html for this!
+	var libraryPaths string
+	switch abi {
+	case "x86", "arm":
+		libraryPaths = "/apex/com.android.art/lib:/apex/com.android.runtime/lib"
+	default:
+		libraryPaths = "/apex/com.android.art/lib64:/apex/com.android.runtime/lib64"
+	}
+
+	// Run tests binary, then delete it.
 	fmt.Println("Running tests on device")
 	testCmd := fmt.Sprintf(
-		"chmod +x \"%[1]s\"; \"%[1]s\" %s; rm -f \"%[1]s\"",
-		remoteTestBinary, strings.Join(leftoverArgs, " "))
-	cmd = exec.Command(adbPath, "shell", testCmd)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) {
-		exitCode = exitError.ExitCode()
+		"LD_LIBRARY_PATH=%s \"%[2]s\" %s; rm -f \"%[2]s\"",
+		libraryPaths, remoteTestBinary, strings.Join(leftoverArgs, " "))
+	_, _, err = cmd(adbPath, "shell", testCmd)
+	if err != nil {
+		exitCode = err.(*exec.ExitError).ExitCode()
 		return
 	}
 
+	return
+}
+
+func cmd(name string, arg ...string) (stdout string, stderr string, err error) {
+	outBuf, errBuf := new(bytes.Buffer), new(bytes.Buffer)
+	c := exec.Command(name, arg...)
+	c.Stdout = io.MultiWriter(outBuf, os.Stdout)
+	c.Stderr = io.MultiWriter(errBuf, os.Stderr)
+	err = c.Run()
+	stdout = strings.TrimSpace(outBuf.String())
+	stderr = strings.TrimSpace(errBuf.String())
+	if err != nil {
+		err = fmt.Errorf("running %s: %s\n", c, err)
+		return
+	}
 	return
 }
