@@ -52,7 +52,12 @@ ANDROID_SERIAL=emulator-1234 go-android-test -s 21 -run TestFoo
 	fmt.Printf("Located adb at: %s\n", adbPath)
 
 	// Ask the running Emulator for its abi so we know how to compile for it.
-	abi, _, err := cmd(adbPath, "shell", "getprop ro.product.cpu.abilist")
+	//
+	// Note: previously this was using ro.product.cpu.abilist, which on some devices would return
+	// a single abi, and on others a list. A single abi is expected by ndkenv.
+	// The Internets suggests that ro.product.cpu.abi might not be available on all versions of
+	// Android, so reverting to abilist and parsing it might be necessary if failures are seen here.
+	abi, _, err := cmd(adbPath, "shell", "getprop ro.product.cpu.abi")
 	if err != nil {
 		fmt.Printf("Fatal: Is an Android Emulator running?\n")
 		exitCode = 1
