@@ -114,9 +114,10 @@ ANDROID_SERIAL=emulator-1234 go-android-test -s 21 -run TestFoo
 	}
 
 	// Run tests binary, then delete it.
+	// chmod is neccessary when running from windows, since pushed binary won't be executable
 	fmt.Println("Running tests on device")
 	testCmd := fmt.Sprintf(
-		"LD_LIBRARY_PATH=%s \"%[2]s\" %s; rm -f \"%[2]s\"",
+		"chmod +x \"%[2]s\"; LD_LIBRARY_PATH=%s \"%[2]s\" %s; rm -f \"%[2]s\"",
 		libraryPaths, remoteTestBinary, strings.Join(leftoverArgs, " "))
 	_, _, err = cmd(adbPath, "shell", testCmd)
 	if err != nil {
