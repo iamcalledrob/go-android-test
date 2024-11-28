@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -81,8 +82,11 @@ ANDROID_SERIAL=emulator-1234 go-android-test -s 21 -run TestFoo
 	// locations. Notably, they're executable even when non-root, and allow for dlopen() to open
 	// system libraries (like libart.so)
 	fmt.Println("Copying compiled tests onto device")
-	remoteTmpDir := filepath.Join("/data", "local", "tmp")
-	remoteTestBinary := filepath.Join(remoteTmpDir, filepath.Base(testBinary))
+	
+	// Use path (not filepath) for remote paths, because remote paths are always unix-style,
+	// whereas the development machine may be windows.
+	remoteTmpDir := path.Join("/data", "local", "tmp")
+	remoteTestBinary := path.Join(remoteTmpDir, filepath.Base(testBinary))
 	if _, _, err = cmd(adbPath, "push", testBinary, remoteTestBinary); err != nil {
 		fmt.Printf("Fatal: Copying to device: %s\n", err)
 		exitCode = 1
